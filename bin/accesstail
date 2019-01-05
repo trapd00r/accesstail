@@ -4,9 +4,13 @@
 use strict;
 use File::Tail;
 use File::LsColor qw(ls_color);
+use File::Basename;
 use Term::ExtendedColor qw(fg bg bold);
 
-my $log   = shift // $ENV{ACCESS_LOG};
+use LWP::Simple;
+
+
+my $log   = shift // get_logfile();
 
 my $tail = File::Tail->new(
   name        => $log,
@@ -21,10 +25,28 @@ my @keywords = qw(
   colorcoke
 );
 
+my %months = (
+  Jan      => 1,
+  Feb      => 2,
+  Mar      => 3,
+  Apr      => 4,
+  May      => 5,
+  Jun      => 6,
+  Jul      => 7,
+  Aug      => 8,
+  Sep      => 9,
+  Oct      => 10,
+  Nov      => 11,
+  Dec      => 12,
+);
+
+#chomp(my $external_ip = get("http://icanhazip.com"));
+
 while(defined( my $line = $tail->read )) {
   my $e = "(.+?)";
   $line =~ /^$e $e $e \[$e:$e $e\] "$e $e $e" $e $e/;
 
+#  my $dns     = gethostbyaddr($ip, 'AF_INET');
   my $ip      = $1;
   my $ref     = $2;
   my $name    = $3;
@@ -37,16 +59,36 @@ while(defined( my $line = $tail->read )) {
   my $code    = $10;
   my $size    = $11;
 
-  $code = bg(196, bold(fg(88, $code))) if $code == 404;
-  $code = fg(155, $code) if $code == 200;
-  $code = fg(160, $code) if $code == 501;
-  $code = fg(208, $code) if $code == 301;
-  $code = fg(124, $code) if $code == 403;
-  $code = fg(113, $code) if $code == 304;
+  my  ($day, $month, $year) = $date =~ m{([0-9]+)/([a-zA-Z]+)/([0-9]+)};
 
-  $request = fg(190, "    $request") if $request eq 'GET';
-  $request = fg(196, "   $request") if $request eq 'POST';
-  $request = fg(197, "   $request") if $request eq 'CONNECT';
+  $date = sprintf("%d.%02d.%02d", $year, $months{$month}, $day);
+
+  $code = bg(196, bold(fg(88, sprintf("%-3s", $code)))) if $code == 404;
+  $code = fg(155, sprintf("%-3s", $code)) if $code == 200;
+  $code = fg(160, sprintf("%-3s", $code)) if $code == 501;
+  $code = fg(208, sprintf("%-3s", $code)) if $code == 301;
+  $code = fg(124, sprintf("%-3s", $code)) if $code == 403;
+  $code = fg(113, sprintf("%-3s", $code)) if $code == 304;
+
+  $request = fg(190, sprintf("% 4s", $request)) if $request eq 'GET';
+  $request = fg(196, sprintf("%.4s", $request)) if $request eq 'POST';
+  $request = fg(197, sprintf("%.4s", $request)) if $request eq 'CONNECT';
+  $request = fg(208, sprintf("%.4s", $request)) if $request eq 'HEAD';
+  $request = fg(160, sprintf("%.4s", $request)) if $request eq 'PROPFIND';
+
+  $ip = sprintf("% 15s", $ip);
+
+
+  # if referer is a raw ip adress, we don't care about it and present the ip
+  # adress the request is coming from instead.
+
+  if($ref =~ m/^[0-9.]+$/) {
+    $ref = fg(131, sprintf("% 20s", $ip));
+  }
+  else {
+    $ref = sprintf("% 20s", $ref);
+  }
+
 
   if($file =~ /\.(:?png|gif|jpg|jpeg)$/) {
     $file = fg(167, $file);
@@ -55,13 +97,52 @@ while(defined( my $line = $tail->read )) {
     $file = fg(74, $file);
   }
   elsif($file =~ m{/$}) {
+  # directory
     $file = fg(30, $file);
   }
   else {
-    $file = ls_color($file);
+    # File::Basename croaks if the filename doesn't look valid, but we don't
+    # really care much for that.
+    *Carp::croak = sub { next };
+    my $dirname = dirname($file);
+    my $basename = basename($file);
+
+    $file = sprintf("%s%s%s",
+      fg(30, "$dirname"),
+      # don't add the separator if dirname is the root /
+      # don't display the lone / if request is for ^/file$
+      # cheat with a backspace ;)
+      $dirname eq '/' ? "\b" : fg(30, '/'),
+      ls_color($basename)
+    );
   }
 
   $size = fg(160, $size) if $size > 5;
-  printf("%s %7s %s \e[38;5;215m%s\e[0m \t%-60s\n",
-    $code, $request, $size, $ip, $file) unless $file =~ m/.+\.(?:css|ico)$/
+  printf("%s %s %s %s %s\n",
+    fg(236, $date), $request, $code, $ref, $file) unless $file =~ m/.+\.(?:css|ico)$/
+}
+
+sub get_logfile {
+  # try to find a suitable access.log
+  for my $log(($ENV{ACCESS_LOG}, qw(/var/log/apache/access.log
+                                    /var/log/apache2/access.log
+                                    /var/log/lighttpd/access.log)
+              )) {
+      -f $log and return $log;
+  }
+
+  # no log found :(
+  usage();
+  exit;
+}
+
+
+
+sub usage {
+  print << "EOF"
+$0  [LOGFILE]
+
+Specify a logfile as runtime argument or set the \$ACCESS_LOG
+environment variable.
+EOF
 }
